@@ -1,0 +1,977 @@
+---
+title: "In-Person Tutoring at SLCC:  Does it Work?"
+author: | 
+  | Jeff Webb
+  | Office of Institutional Research and Reporting,
+  | Salt Lake Community College
+date: \today
+header-includes:
+    - \usepackage{fancyhdr}
+    - \usepackage{float}
+    - \pagestyle{fancy}
+    - \rhead{\includegraphics[width=3cm,height=3cm]{logo.jpg}}
+
+output:
+  bookdown::pdf_document2:
+      number_sections: false
+      toc: no
+
+---
+
+# Introduction
+
+SLCC has been offering tutoring services since 1986 when the Learning Center Program was created. In July 2017, this program was reorganized as the STEM Learning Resources department within the School of Science, Mathematics, and Engineering. Online tutoring was first offered as an alternative to in-person tutoring in 2012 but was mostly unsuccessful. In January 2017, the college began offering online tutoring through Brainfuse, which students accessed through their Canvas course pages. In the process of researching the impact of Brainfuse use on student course performance, we considered the impact also of SLCC's traditional tutoring options. This report summarizes those findings.
+
+
+# Summary of Findings
+
+In person tutoring appeared to help students get higher grades, on average, than they otherwise would have in the courses for which they sought help.  The average grade improvement due to tutoring was .22 on a 4 point scale.  Thus, we can say that tutoring helped students improve course grades by approximately one grade increment (the difference, for example, between B- and B).
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include=F,echo = FALSE, message=F, warning=F,cache=TRUE)
+library(tidyverse)
+library(stringr)
+library(knitr)
+library(arm)
+library(grid)
+library(arm)
+library(MatchIt)
+library(Matching)
+library(lme4)
+
+theme_slcc <- function(base_size=12) {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(0, unit="cm"),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+      
+}
+
+scale_fill_slcc <- function(...){
+      library(scales)
+      discrete_scale("fill","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+scale_colour_slcc <- function(...){
+      library(scales)
+      discrete_scale("colour","slcc",manual_pal(values = c("#00ABE1", "#FFCD00", "#003865", "#833921")), ...)
+
+}
+
+
+
+convert_grade <- function(grade, include_w=F){
+  x <- grade
+
+  if(include_w==F){
+  vec <- rep(0, length(x))
+  vec[which(x=="A")] <- 4; vec[which(x=="A-")] <- 3.7; vec[which(x=="B+")] <- 3.4; vec[which(x=="B")] <- 3; vec[which(x=="B-")] <- 2.7;
+  vec[which(x=="C+")] <- 2.4; vec[which(x=="C")] <- 2; vec[which(x=="C-")] <- 1.7; vec[which(x=="D+")] <- 1.4; vec[which(x=="D")] <- 1;
+  vec[which(x=="D-")] <- .7; vec[which(x=="E")] <- 0; vec[which(x=="I")] <- 0
+  }
+
+  if(include_w==T){
+    vec <- rep(0, length(x))
+    vec[which(x=="A")] <- 4; vec[which(x=="A-")] <- 3.7; vec[which(x=="B+")] <- 3.4; vec[which(x=="B")] <- 3; vec[which(x=="B-")] <- 2.7;
+    vec[which(x=="C+")] <- 2.4; vec[which(x=="C")] <- 2; vec[which(x=="C-")] <- 1.7; vec[which(x=="D+")] <- 1.4; vec[which(x=="D")] <- 1;
+    vec[which(x=="D-")] <- .7; vec[which(x=="E")] <- 0; vec[which(x=="I")] <- 0;  vec[which(x=="W")] <- 0
+  }
+
+  return(vec)
+}
+
+find_gaps <- function(terms){
+  check <- terms[order(terms)]
+
+  if(!all(check==terms)) print("problem with order")
+
+  df <- data.frame(terms=terms, diff= c(NA, diff(terms)),  split1=0, split2=0, gap=NA)
+  df <- df[-1,]
+  df$split2 <-   as.numeric(str_sub(df$diff, start=-2))
+  df$split1 <- (df$diff - df$split2)/100
+  df$gap[which(df$diff < 100 & (df$diff==80 | df$diff==10))] <- 0
+  df$gap[which(df$diff < 100 & (df$diff==90 | df$diff==20))] <- 1
+  df$gap[which(df$diff >= 100 & df$split2==0)] <- df$split1[which(df$diff >= 100 & df$split2==0)]*3 -1
+  df$gap[which(df$diff >= 100 & (df$split2==80 |df$split2==10))] <- (df$split1[which(df$diff >= 100 & (df$split2==80 |df$split2==10))]*3 -1) +1
+  df$gap[which(df$diff >= 100 & (df$split2==90 |df$split2==20))] <- (df$split1[which(df$diff >= 100 & (df$split2==90 |df$split2==20))]*3 -1) +2
+  vec <- as.numeric(c(NA, df$gap))
+
+  if(length(vec)!=length(terms)) print("problem with length")
+vec
+
+}
+
+find_gaps(c(200730, 200740, 200840))
+
+find_term_seq <- function(term, gap=T){
+  if(gap==T){
+    ts <- seq(min(term),max(term), by=10)
+    ts <- ts[which(substr(ts, 5,6)=="20" | substr(ts, 5,6)=="30" | substr(ts, 5,6)=="40")]
+    df <- data.frame(terms=ts, seq=seq(1, length(ts)))
+    vec <- left_join(data.frame(terms=term), df, by="terms")$seq
+  }
+  if(gap==F){
+    u_terms <- unique(term)
+    u_terms <- u_terms[order(u_terms)]
+    df <- data.frame(terms=u_terms, seq=seq(1, length(u_terms)))
+    vec <- left_join(data.frame(terms=term), df, by="terms")$seq
+  }
+  vec
+  
+}
+
+find_term_seq(c(200730, 200740, 200740, 200740, 200840))
+find_term_seq(c(200730, 200740, 200840), gap=F)
+```
+
+
+```{r }
+### Data: Several different data sources
+
+#############################################################
+# IDs to relate pidm and canvas ID
+id_cross <- read_csv("id_list.csv")
+names(id_cross) <- c("pidm", "canvas_id")
+
+#############################################################
+# Student demographics from vfa_ipeds
+
+# select t_pidm,
+# enroll_term,
+# credits_att,
+# pt_ft,
+# credits_earned,
+# total_credits_earned,
+# term_gpa,
+# enroll.vfa_ipeds_terms.cum_gpa,
+# cum_earned_credits,
+# pell_elig,
+# age_beginning_of_term,
+# gender,
+# ethnic,
+# cohort,
+# former_cce,
+# declared_transfer,
+# cohort_degree_intent,
+# banner_id
+# from enroll.vfa_ipeds_terms
+# left join enroll.vfa_ipeds_students on t_pidm = pidm
+
+s <- read_csv("student_list.csv")
+names(s) <- tolower(names(s))
+
+
+
+################################################################
+# Tutoring data (tutortrac)
+tt <- read_csv("TutorTrac Data.csv")
+
+tt <- tt %>%
+  dplyr::select(id = `[Students]ID`,
+         name =`[Students]Full Name`,
+         date = `[Visits]Date In`,
+         time = `[Visits]Total Time`,
+         class = `[Sections]SubjectID`,
+         term = `[Sections]Term ID`)
+
+
+tt$class <- ifelse(tt$class == "1060 Math Finals WORKSHOP", "MATH1060", tt$class)
+tt$class <- ifelse(tt$class == "1210 Math Finals WORKSHOP", "MATH1210", tt$class)
+tt$class <- ifelse(tt$class == "1010 Math Finals WORKSHOP", "MATH1010", tt$class)
+tt$class <- ifelse(tt$class == "0990 Math Finals WORKSHOP", "MATH0990", tt$class)
+tt$class <- ifelse(tt$class == "1040 Math Finals WORKSHOP", "MATH1040", tt$class)
+
+tt$tutoring <- 1
+
+# Eliminate multiple rows in tutoring data:  aggregate to student x course x term
+tt_data <- tt %>%
+  group_by(id, class, term) %>%
+  mutate(total_time = sum(time),
+         visits = length(class)) %>%
+  group_by(id, class, term) %>%
+  slice(1)  %>%
+  filter(term > 0)
+
+###################################################
+# Grade and course data from government_course
+
+# SELECT person_uid,
+#          academic_period,
+#          sub_academic_period,
+#          subject,
+#          course_number,
+#          course_credits,
+#          final_grade,
+#          instructor_id,
+#          course_campus
+#     FROM government_course
+#    WHERE    academic_period = 201720
+#          OR academic_period = 201620
+#          OR academic_period = 201520
+#          OR academic_period = 201640
+#          OR academic_period = 201540
+# ORDER BY person_uid, academic_period
+
+g <- read_csv("grade.csv")
+names(g) <- tolower(names(g))
+
+#Format grades data and include previous semester.
+
+grade_data <- g %>%
+  filter(sub_academic_period!="CC", academic_period==201720 | academic_period==201640 | academic_period==201620| academic_period==201540) %>%
+  arrange(person_uid, academic_period) %>%
+  mutate(num_grade = convert_grade(final_grade, include_w = T),
+         pass = ifelse(num_grade > 2, 1, 0),
+         class = paste0(subject, course_number)) %>%
+  group_by(person_uid) %>%
+  mutate(min_course = as.numeric(min(course_number))) %>%
+  dplyr::select(person_uid, academic_period, subject, course_number, class, course_credits, final_grade, num_grade, instructor_id, course_campus, pass) %>%
+  left_join(s, by = c("person_uid"="t_pidm", "academic_period"="enroll_term")) %>%
+  left_join(id_cross, by = c("person_uid" ="pidm")) %>%
+  filter(!is.na(num_grade), !is.na(term_gpa)) %>%
+  arrange(person_uid, class) %>%
+  mutate(time_since = academic_period - cohort)
+
+
+grade_data <- grade_data[-which(duplicated(grade_data)),] #Remove any duplicates
+
+grade_data <- grade_data %>%
+  left_join(tt_data, by = c("banner_id" = "id", "class" = "class", "academic_period"="term"))
+
+grade_data$tutoring[which(is.na(grade_data$tutoring))] <- 0
+grade_data$visits[which(is.na(grade_data$visits))] <- 0
+grade_data$total_time[which(is.na(grade_data$total_time))] <- 0
+
+### Clean & format Brainfuse data
+bf <- read.csv("detailUniqueUsers_Brainfuse Spring 2017.csv")
+
+bf <- bf %>%
+  group_by(Course_name) %>%
+  mutate(course = paste(unlist(strsplit(as.character(Course_name), "-|\\s"))[1:2], collapse=""))
+
+bf$College.ID <- as.numeric(as.character(bf$College.ID))
+
+bf_courses <- bf %>%
+  filter(Minutes > 5, course!="NANA") %>%
+  group_by(Username, SubjName, course) %>%
+  tally %>%
+  filter(n > 1) %>%
+  group_by(SubjName, course) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>%
+  filter(count> 1) %>%
+  data.frame() %>%
+  dplyr::select(SubjName, course) %>%
+  unique %>%
+  mutate(bf_course = 1)
+
+bf <- bf %>%
+  left_join(bf_courses, by = c("SubjName","course"))
+
+bf_extract <- bf %>%
+  filter(bf_course==1) %>%
+  group_by(bf_id = College.ID, SubjName, course= course) %>%
+  summarize(bf_minutes = sum(Minutes),
+            bf_count = n(),
+            bf_course = first(bf_course)) %>%
+  group_by(bf_id, course) %>%
+  summarize(bf_minutes = sum(bf_minutes),
+            bf_count = sum(bf_count),
+            bf_class = first(bf_course)) %>%
+  rename(bf_course = course)
+
+bf_extract$term <- 201720
+
+grade_data <- grade_data %>%
+  left_join(bf_extract, by =c("canvas_id" = "bf_id", "class" = "bf_course", "academic_period" = "term"))
+
+grade_data$bf_class[which(is.na(grade_data$bf_class))] <- 0
+grade_data$bf_count[which(is.na(grade_data$bf_count))] <- 0
+grade_data$bf_minutes[which(is.na(grade_data$bf_minutes))] <- 0
+
+bf$bf_student <- 1
+
+
+grade_data <- grade_data %>%
+  mutate(gender = ifelse(gender=="F" | gender=="Female", "F",
+                         ifelse(gender=="M" | gender=="Male", "M", NA))) %>%
+  filter(!is.na(gender))
+
+
+
+grade_data$white <- ifelse(grade_data$ethnic=="Caucasian" |grade_data$ethnic=="W","white","non-white")
+
+grade_data$online <- ifelse(grade_data$course_campus =="E", 1, 0)
+
+# Fix ethnicity
+
+grade_data$ethnic2 <- ifelse(grade_data$ethnic == "Hispanic/Latino/Latina", "H",
+                        ifelse(grade_data$ethnic == "Caucasian", "W",
+                               ifelse(grade_data$ethnic == "Not Specified", "U",
+                                      ifelse(grade_data$ethnic == "Asian", "A",
+                                             ifelse(grade_data$ethnic == "More Than One Race", "M",
+                                                    ifelse(grade_data$ethnic == "Native American", "I",
+                                                           ifelse(grade_data$ethnic == "Pacific Islander", "P",
+                                                                  ifelse(grade_data$ethnic == "African American", "B","N"))))))))
+
+## Fix cum earned credits
+
+grade_data$cum_earned_credits[which(is.na(grade_data$cum_earned_credits))] <- 0
+
+grade_data <- grade_data %>% arrange(person_uid, academic_period)
+s <- s %>% arrange(t_pidm, enroll_term)
+
+
+
+```
+
+
+# Research design
+
+Course grade was the outcome variable in the study, and the treatment was tutoring.  We were interested in whether tutoring *caused* improved performance in the classes for which students sought help.  Our analytic strategy was to compare grade outcomes for students in the treatment condition (tutoring) to those in the control condition (no tutoring).  One major threat to the validity of causal inference in observational studies such as this one is selection bias: students who seek tutoring may have performed better with or without tutoring due to unobserved differences in ability, preparation or motivation. One method for countering selection bias is propensity score matching (PSM), which we used in this study. We matched students who used tutoring  with students who did not, on a variety of characteristics. PSM largely eliminated systematic differences between the groups, making causal inference---our analytic goal---more plausible.
+
+We focused on the 4 most recent terms (excluding summer):  Fall 2015, Spring 2016, Fall 2016, Spring 2017.  We required that matched pairs of students had the *same classes* with the *same teachers* (though not necessarily in the same term) and were as similar as possible on the following characteristics:
+
+- cohort year
+- cumulative earned credits
+- term credits attempted
+- cumulative GPA
+- age at beginning of term
+- gender
+- ethnicity
+- former concurrent enrollment
+- term pell eligibility
+- declared transfer
+
+The goal in matching is to create treatment and control groups that, as in a randomized control trial, do not display systematic differences.  Students in the control group should be just like those in the treatment group, having opted out of treatment---tutoring---for reasons of chance rather than substance.  They are students who *would have used* tutoring if randomness in the world had not intervened.  To make this idea plausible we need to show that matching in fact successfully aligned treatment and control groups on the matching characteristics listed above. See Table 1 for a comparison of the matched groups.
+
+# Data 
+
+Tutoring data was extracted from the TutorTrac system.  It contained information on `r nrow(tt)` tutoring visits over `r length(unique(subset(tt, term >0)$term))` terms, from 201240 to 201720: 
+
+- Student ID
+- Student name
+- Date and time of tutoring session
+- Originating class 
+- Term
+
+The data quality was suspect in some cases.  We eliminated rows that had missing or obviously incorrect data and calculated a single usage summary---total visits, total time---for each student in each course. (Students could be represented multiple times in the data if they sought tutoring for more than one class.)  There were `r nrow(tt_data)` such usages during this time period by `r length(unique(tt_data$id))` students for `r length(unique(tt_data$class))` courses.
+
+
+
+### Data cleaning and modeling
+
+We selected the most recent 4 regular terms (Fall 2015 - Spring 2017, excluding summer) for analysis because tutoring practices, like other services at the college, are likely to be in flux, and data that is older than 2 years may not be representative of current practices.  Additionally, the size of the dataset was awkwardly large; filtering based on recency was therefore not only sensible, ensuring representativeness, but also convenient, bringing the dataset down to a reasonable size for statistical analysis. 
+
+Students who used Brainfuse tutoring in spring 2017 were removed from the data in order to avoid mistaking the effect of electronic tutoring for that of traditional tutoring.  Additionally:
+
+- We construed course grades of W as 0 (equivalent to E).  That is why, in Table 6, some students had attempted credits of 0:  they withdrew from the course.
+- We removed students with missing gender information.
+
+We joined tutoring data to new student cohorts, from Fall 2005 to Spring 2017, as defined by the Voluntary Framework of Accountability (VFA).  VFA cohorts offer a consensus way to define new students.  Most, but not all, SLCC students are in a VFA cohort.  (For example, VFA excludes concurrent enrollment students.)  Using VFA cohorts therefore entailed filtering the data still further to a total of 84216 students, 6252 of whom used tutoring.
+
+
+### Matching
+
+Matching was done with replacement (meaning that a control could serve as a match for more than one treatment student) and the matching was 1-to-1 (meaning that there were the same number of students in the control as there were in the treatment condition).  Table 1 profiles the matched and unmatched treatment and control groups.
+
+
+
+```{r include=F}
+# Prepare data for tutoring PSM
+#Need to restrict to class + teacher combos
+grade_data$class_inst <- paste0(grade_data$class, grade_data$instructor_id)
+
+tutor_data <- grade_data
+tutor_class_inst <-  subset(tutor_data, tutoring==1)$class_inst
+tutor_data <- tutor_data[which(tutor_data$class_inst %in% tutor_class_inst), ]
+
+tutor_data <- tutor_data %>%
+  filter(bf_class == 0) %>%
+  dplyr::select(person_uid, bf_class,gender,age_beginning_of_term,former_cce, cum_earned_credits,
+         cohort, white, cum_gpa,credits_att, former_cce, pell_elig, declared_transfer, num_grade, tutoring,
+         class, instructor_id,  total_time, visits, academic_period, ethnic2, class_inst, pass, online, time_since) %>%
+  na.omit
+
+unique(tutor_data$cohort)
+
+#Naive test
+ summary(lm(num_grade ~ tutoring*online , data= tutor_data))
+ summary(lm(num_grade ~ total_time , data= tutor_data))
+ summary(lm(num_grade ~ visits , data= tutor_data))
+ summary(glm(pass ~ tutoring, data = tutor_data))
+# summary(lmer(num_grade ~ tutoring  + (1|class) + (1|person_uid) +
+#                (1|instructor_id), data= subset(tutor_data, bf_class==0)))
+
+
+tutor_data <- tutor_data[-which(duplicated(tutor_data)),]
+table(tutor_data$bf_class, tutor_data$tutoring)
+
+length(unique(tutor_data$person_uid)) #27958
+
+# Propensity scores (lengthy)
+# library(lme4)
+# library(BMA)
+# summary(bma_mod <- bic.glm(tutoring ~ credits_att + time_since + gender + cum_gpa * cum_earned_credits +
+#                              cum_gpa *online +
+#                   factor(academic_period) + cum_gpa *age_beginning_of_term + former_cce +
+#                   factor(ethnic2) + pell_elig*cum_gpa  + declared_transfer, glm.family = binomial, data= tutor_data))
+# 
+# bma.mod
+# 
+# summary(glmer_psm <-  glmer(tutoring ~ (1|class) + (1| instructor_id) + (1|academic_period) +
+#                               gender +
+#                             credits_att +
+#                             age_beginning_of_term  +
+#                             cum_gpa +
+#                           cum_earned_credits +
+#                             former_cce +
+#                           ethnic2 +
+#                             pell_elig +
+#                             declared_transfer, 
+#                           family = binomial, data = tutor_data))
+
+# 
+# #ps <- predict(bma_mod, newdata=tutor_data)
+# ps <- predict(glmer_psm, newdata=tutor_data)
+# #ps <- fitted(pscores_tutoring)  # Propensity scores
+# Y  <- tutor_data$num_grade  # Dependent variable
+# Tr <- tutor_data$tutoring # Treatment indicator
+# 
+# rr1 <- Matchby(Y=Y, Tr=Tr, X=ps, by = tutor_data[,c("class_inst")],  M=1, replace = T,ties = F, estimand = "ATT")
+# 
+# MatchBalance(tutoring ~ gender, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ age_beginning_of_term, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ cum_gpa, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ cum_gpa * cum_earned_credits, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ former_cce, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ white, data= tutor_data, match.out=rr1, nboots=100)
+# MatchBalance(tutoring ~ pell_elig + declared_transfer + I(cum_gpa^2), data= tutor_data, match.out=rr1, nboots=100)
+# 
+# 
+# summary(rr1)
+# 
+# tutor_data$ps <- ps
+# matched_tutor_data <- tutor_data[c(rr1$index.treated, rr1$index.control),]
+# 
+# write.csv(matched_tutor_data, "matched_tutor_data")
+
+matched_tutor_data <- read.csv("matched_tutor_data")[,-1]
+
+unique(matched_tutor_data$tutoring)
+# analysis
+summary(lm(num_grade ~ tutoring, data= matched_tutor_data))
+summary(polr(factor(num_grade) ~ tutoring, data= matched_tutor_data))
+summary(lm(num_grade ~ total_time, data= matched_tutor_data))
+summary(lm(num_grade ~ visits, data= matched_tutor_data))
+m1 <- summary(lmer(num_grade ~ tutoring +  (1 | person_uid), data= matched_tutor_data))
+
+m2 <- summary(lmer(num_grade ~ tutoring +  (1 | person_uid), data= subset(matched_tutor_data, cum_gpa > 0)))
+summary(m2)
+
+matched_tutor_data$tutoring <- ifelse(matched_tutor_data$tutoring==1,"Yes","No")
+
+tutor_before_match <- tutor_data %>%
+  group_by(tutoring) %>%
+  summarize(count = n(),
+    `cumulative earned credits` = mean(cum_earned_credits),
+    `term credits attempted` = mean(credits_att),
+    `cumulative GPA` = mean(cum_gpa),
+    `age at beginning of term` = mean(age_beginning_of_term),
+    `% female` = mean(ifelse(gender=="F", 1, 0))*100,
+    `% white` = mean(ifelse(ethnic2=="W",1, 0))*100,
+    `% latinx` = mean(ifelse(ethnic2=="H",1, 0))*100,
+    `% former concurrent enrollment` = mean(former_cce)*100,
+    `% term pell eligibility` = mean(pell_elig)*100,
+    `% online` = mean(online)*100,
+    `% declared transfer` = mean(declared_transfer)*100,
+    `avg grade` = mean(num_grade))
+
+tutor_after_match <- matched_tutor_data %>%
+  group_by(tutoring) %>%
+  summarize(count = n(),
+    `cumulative earned credits` = mean(cum_earned_credits),
+    `term credits attempted` = mean(credits_att),
+    `cumulative GPA` = mean(cum_gpa),
+    `age at beginning of term` = mean(age_beginning_of_term),
+    `% female` = mean(ifelse(gender=="F", 1, 0))*100,
+    `% white` = mean(ifelse(ethnic2=="W",1, 0))*100,
+    `% latinx` = mean(ifelse(ethnic2=="H",1, 0))*100,
+    `% former concurrent enrollment` = mean(former_cce)*100,
+    `% term pell eligibility` = mean(pell_elig)*100,
+    `% online` = mean(online)*100,
+    `% declared transfer` = mean(declared_transfer)*100,
+    `avg grade` = mean(num_grade))
+
+
+library(xtable)
+xtable(cbind(t(tutor_before_match), t(tutor_after_match)), digits=2, caption = "Comparison of unmatched ")
+
+
+
+```
+
+
+\begin{table}[H]
+\centering
+\begin{tabular}{rrrrr}
+ \hline
+         && Unmatched && Matched \\
+  \hline
+tutoring & No & Yes & No & Yes \\ 
+  count & 84216 & 6252 & 6252 & 6252 \\ 
+  cumulative earned credits & 35.23 & 43.73 & 43.32 & 43.73 \\ 
+  term credits attempted & 10.48 & 10.48 & 10.55 & 10.48 \\ 
+  cumulative GPA & 2.74 & 3.04 & 3.03 & 3.04 \\ 
+  age at beginning of term & 24.24 & 27.06 & 26.50 & 27.06 \\ 
+  \% female & 48.78 & 49.63 & 49.52 & 49.63 \\ 
+  \% white & 50.19 & 45.03 & 44.58 & 45.03 \\ 
+  \% latinx & 11.42 & 15.20 & 14.65 & 15.20 \\ 
+  \% former concurrent enrollment & 30.88 & 22.92 & 22.62 & 22.92 \\ 
+  \% term pell eligibility & 37.59 & 49.36 & 50.02 & 49.36 \\ 
+  \% online & 18.36 & 8.40 & 10.96 & 8.40 \\ 
+  \% declared transfer & 24.11 & 24.18 & 24.68 & 24.18 \\ 
+  avg grade & 2.17 & 2.33 & 2.04 & 2.33 \\ 
+   \hline
+\end{tabular}
+\caption{Comparison of matched and unmatched treatment and control groups.} 
+\end{table}
+
+In most cases, as can be seen in Table 1, the matching operation made the two groups more comparable.  While matching *widened* the difference between the group means for declared transfer and credits attempted, that larger difference was not statistically significant.  In all the other cases, as expected, matching brought the groups closer together (this was particularly true in the case of crucial performance-related variables, such as earned credits and cumulative GPA), and the end result, in terms of course performance, was to *increase* the raw performance difference (average course grade of 2.04 for students who did not use tutoring compared to 2.33 for those who did).  
+
+# Results
+
+We first present descriptive statistics on tutoring usage from the most recent 4 terms of TutorTrac data (fall 2015 - spring 2017).
+
+### Descriptive statistics 
+
+```{r}
+T2 <- tt_data %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  group_by(class) %>%
+  summarize(visits = sum(visits)) %>%
+  arrange(desc(visits)) %>%
+  head(10)
+
+  library(xtable)
+
+print(xtable(T2, caption = "Table 2: Tutoring visits by class, Fall 2015 - Spring 2017"), include.rownames=FALSE)
+
+```
+
+Table 2 shows tutoring visits by class.  Math students were by far the largest users of tutoring.  Table 3 shows the classes with the largest non-Math tutoring use.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lr}
+  \hline
+class & visits \\ 
+  \hline
+MATH1010 & 12504 \\ 
+  MATH1050 & 10153 \\ 
+  MATH0980 & 4610 \\ 
+  MATH1040 & 3362 \\ 
+  MATH1060 & 3150 \\ 
+  MATH0990 & 2959 \\ 
+  MATH1030 & 2500 \\ 
+  MATH1210 & 2420 \\ 
+  CSIS1410 & 1448 \\ 
+  MATH1220 & 1238 \\ 
+   \hline
+\end{tabular}
+\caption{Tutoring visits by class, Fall 2015 - Spring 2017} 
+\end{table}
+
+
+```{r}
+T3 <- tt_data %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  filter(substr(class, 1, 4) != "MATH") %>%
+  group_by(class) %>%
+  summarize(visits = sum(visits)) %>%
+  arrange(desc(visits)) %>%
+  head(10)
+
+print(xtable(T3, caption = "Table 3: Tutoring visits by class (non-Math), Fall 2015 - Spring 2017"), include.rownames=FALSE)
+
+
+```
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lr}
+  \hline
+class & visits \\ 
+  \hline
+CSIS1410 & 1448 \\ 
+  CHEM1110 & 1128 \\ 
+  PHYS2210 & 1003 \\ 
+  MGT2040 & 850 \\ 
+  CSIS1400 & 790 \\ 
+  CHEM1210 & 737 \\ 
+  CHEM1010 & 417 \\ 
+  BIOL1610 & 390 \\ 
+  CHEM1220 & 295 \\ 
+  CHEM2310 & 280 \\ 
+   \hline
+\end{tabular}
+\caption{Tutoring visits by class (non-Math), Fall 2015 - Spring 2017} 
+\end{table}
+
+```{r}
+avg_length <- ungroup(tt_data) %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  dplyr::summarize(round(sum(total_time)/sum(visits),2)) %>%
+  as.numeric
+
+avg_visits <- ungroup(tt_data) %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  dplyr::summarize(round(mean(visits),2)) %>%
+  as.numeric
+
+med_visits <- ungroup(tt_data) %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  dplyr::summarize(median(visits)) %>%
+  as.numeric
+
+avg_hours <- ungroup(tt_data) %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  dplyr::summarize(round(mean(total_time/60),2)) %>%
+  as.numeric
+
+med_hours <- ungroup(tt_data) %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  dplyr::summarize(median(total_time/60)) %>%
+  as.numeric
+
+
+```
+
+The average length of a tutoring visit was `r avg_length` minutes, and the students had, on average, `r avg_visits` visits per course (median visits = `r med_visits`) and `r avg_hours` total hours of tutoring per course (median hours = `r med_hours`).  We did not set a threshold for what counted as a tutoring visit but included all logged visits, no matter how short.  The amount of tutoring used by students varied by course.  Tables 4 and 5 show statistics for the 10 heaviest usage courses.
+
+```{r}
+
+T4 <- tt_data %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  group_by(class, id) %>%
+  summarize(visits = round(mean(visits),2)) %>%
+  group_by(class) %>%
+  summarize(`max visits` = max(visits),
+    `avg visits` = round(mean(visits),2),
+            `median visits` = median(visits),
+            n=n()) %>%
+  filter(n > 5) %>%
+  arrange(desc(`median visits`)) %>%
+  head(20)
+
+print(xtable(T4, caption = "Table 4: Tutoring visits by class, Fall 2015 - Spring 2017.  The table is ordered by median visits and includes only classes with more than 5 students."), include.rownames=FALSE)
+
+
+T4 <- tt_data %>%
+  group_by(class) %>%
+  summarize(`avg hours` = round(mean(total_time/60),2)) %>%
+  arrange(desc(`avg hours`)) %>%
+  head(10)
+
+T5 <- tt_data %>%
+  filter(term == 201540 | term == 201620 |term == 201640 |term == 201720 ) %>%
+  group_by(class, id) %>%
+  summarize(hours = round(mean(total_time/60),2)) %>%
+  group_by(class) %>%
+  summarize(`max hours` = max(hours),
+    `avg hours` = round(mean(hours),2),
+            `median hours` = median(hours),
+            n=n()) %>%
+  filter(n > 5) %>%
+  arrange(desc(`median hours`)) %>%
+  head(20)
+
+print(xtable(T5, caption = "Table 5: Average tutoring hours by class, Fall 2015 - Spring 2017.  The table is ordered by median hours and includes only classes with more than 5 students."), include.rownames=FALSE)
+
+
+```
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrr}
+  \hline
+class & max visits & avg visits & median visits & n \\ 
+  \hline
+CHEM2315 & 8.00 & 3.86 & 4.00 &   7 \\ 
+  ENGR2030 & 11.00 & 3.44 & 3.00 &  18 \\ 
+  MATH2900 & 11.00 & 3.78 & 3.00 &   9 \\ 
+  MATH2280 & 5.00 & 3.00 & 2.50 &   6 \\ 
+  PHYS2020 & 12.00 & 3.38 & 2.50 &   8 \\ 
+  ACCT2600 & 17.00 & 3.75 & 2.00 &   8 \\ 
+  CHEM1120 & 36.00 & 4.74 & 2.00 &  42 \\ 
+  CHEM2310 & 18.00 & 3.32 & 2.00 &  84 \\ 
+  CHEM2320 & 13.00 & 3.25 & 2.00 &  12 \\ 
+  CHEM2325 & 3.00 & 1.83 & 2.00 &   6 \\ 
+  CSIS2420 & 37.00 & 4.51 & 2.00 &  60 \\ 
+  EE2260 & 3.00 & 1.67 & 2.00 &   9 \\ 
+  ENGR2140 & 3.00 & 1.86 & 2.00 &   7 \\ 
+  MATH0980 & 225.00 & 6.94 & 2.00 & 656 \\ 
+  MATH1010 & 188.00 & 6.36 & 2.00 & 1687 \\ 
+  MATH1050 & 149.00 & 5.99 & 2.00 & 1380 \\ 
+  PHYS2010 & 44.00 & 5.65 & 2.00 &  26 \\ 
+  PHYS2220 & 45.00 & 5.85 & 2.00 &  33 \\ 
+  CSIS2810 & 48.00 & 9.05 & 1.75 &  10 \\ 
+  BIOL1620 & 5.00 & 2.33 & 1.50 &   6 \\ 
+   \hline
+\end{tabular}
+\caption{Tutoring visits by class, Fall 2015 - Spring 2017.  The table is ordered by median visits and includes only classes with more than 5 students.} 
+\end{table}
+
+
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lrrrr}
+  \hline
+class & max hours & avg hours & median hours & n \\ 
+  \hline
+CHEM2315 & 20.03 & 4.94 & 2.12 &   7 \\ 
+  EE2260 & 4.13 & 1.89 & 2.08 &   9 \\ 
+  ACCT1120 & 13.67 & 3.04 & 1.86 &  24 \\ 
+  ACCT2010 & 20.83 & 2.28 & 1.44 &  92 \\ 
+  ACCT2020 & 13.50 & 2.10 & 1.42 &  52 \\ 
+  CHEM2325 & 4.35 & 1.75 & 1.35 &   6 \\ 
+  PHYS2220 & 74.70 & 5.20 & 1.30 &  33 \\ 
+  MATH2280 & 2.70 & 1.23 & 1.27 &   6 \\ 
+  BIOL1620 & 7.83 & 2.77 & 1.25 &   6 \\ 
+  ACCT2600 & 10.33 & 2.30 & 1.21 &   8 \\ 
+  ACCT1110 & 9.92 & 1.78 & 1.18 &  55 \\ 
+  ENGR2300 & 8.05 & 2.25 & 1.18 &  14 \\ 
+  MEEN1000 & 11.92 & 2.95 & 1.12 &  14 \\ 
+  MATH1040 & 81.40 & 2.79 & 1.09 & 702 \\ 
+  MATH1010 & 93.50 & 2.86 & 1.05 & 1687 \\ 
+  PHYS2010 & 27.15 & 4.10 & 1.02 &  26 \\ 
+  PHYS2215 & 16.65 & 3.15 & 0.98 &  13 \\ 
+  CHEM1120 & 34.70 & 5.14 & 0.98 &  42 \\ 
+  MATH1030 & 52.04 & 2.32 & 0.97 & 444 \\ 
+  BIOL2325 & 10.05 & 1.72 & 0.97 &  29 \\ 
+   \hline
+\end{tabular}
+\caption{Average tutoring hours by class, Fall 2015 - Spring 2017.  The table is ordered by median hours and includes only classes with more than 5 students.} 
+\end{table}
+
+
+Figures 1 and 2 show the distribution of visits and time for all students and courses from Fall 2015 to Spring 2017.  The large range of the x-axes indicates that a small number of students were very heavy users of tutoring.
+
+```{r}
+ggplot(subset(tt_data, term > 201520), aes(visits)) +
+  geom_histogram(fill="#00ABE1") +
+  geom_vline(xintercept = avg_visits)+
+  geom_vline(xintercept = med_visits, lty= 3)+
+  theme_slcc() 
+ggsave("visits.png")
+
+# ggplot(subset(tt_data, visits < 30), aes(visits)) +
+#   geom_histogram(fill="#00ABE1") +
+#   geom_vline(xintercept = mean(tt_data$visits))+
+#   geom_vline(xintercept = median(tt_data$visits), lty= 3)+
+#   theme_slcc() 
+
+ggplot(subset(tt_data, term > 201520), aes(total_time/60)) +
+  geom_histogram(fill="#00ABE1") +
+  geom_vline(xintercept = avg_hours)+
+  geom_vline(xintercept = med_hours, lty= 3) + 
+  theme_slcc() +
+  xlab("hours")
+ggsave("hours.png")
+```
+
+![Distribution of tutoring visits per student course, fall 2015 - spring 2017. Mean visits = 4.62 (solid line).  Median visits = 1 (dashed line). ](visits.png)
+
+![Distribution of total hours spent in tutoring per student course, fall 2015 - spring 2017. Mean hours = 2.35 (solid line).  Median hours = .7 (dashed line).](hours.png)
+
+### Inferential statistics
+
+For statistical analyses we used the matched data, with a total of 12,504 observations split evenly between treatment and control conditions.  See Table 1 for summary statistics on the two groups.  Inferential results are as follows:
+
+1. Statistical analysis indicated that the raw difference in grade outcomes between the groups was statistically significant.   Specifically, regression analysis estimates that tutoring improved grades by, on average, `r round(coefficients(m1)[2,1],2)` on a 4 point scale.  The 95% confidence interval for this estimate was [`r round(coefficients(m1)[2,1] - 1.96*coefficients(m1)[2,2],2)`, `r round(coefficients(m1)[2,1] + 1.96*coefficients(m1)[2,2],2)`].  Figure 3 shows the grade distribution by treatment condition.  
+
+2.  While increased grades were associated with both visits and total time (meaning that as tutoring visits and time spent in tutoring went up, so did grades), the effect was negligibly small. 
+
+Figure 4 shows the difference in average course grade, by class, for tutoring vs. no tutoring.  The bars represent point estimates, and the error bars represent 95% confidence intervals on those point estimates.  As we can see, the confidence intervals are quite wide.  While we can have a lot of confidence in the overall grade difference [`r round(coefficients(m1)[2,1] - 1.96*coefficients(m1)[2,2],2)`, `r round(coefficients(m1)[2,1] + 1.96*coefficients(m1)[2,2],2)`], we don't have a lot of confidence in grade differences by class.  In large part this is because of low n:  by the time we have subsetted the data to a single class, there are not many observations left, which limits our ability to discern differences.  The classes with error bars that do not include 0 are ones in which tutoring had a statistically significant effect on grade outcomes (these tend to be classes with larger n), and overlapping error bars between classes---all of them---mean that we cannot say with confidence that tutoring impacted grades differently in those classes. Thus, we know that tutoring had an overall effect, but we can't confidently rank classes according to tutoring's class-specific effects.
+
+```{r}
+# Tables and plots
+
+#summary(lm(num_grade ~ tutoring , data = subset(matched_tutor_data, (total_time > 20 & tutoring == 1) | tutoring == 0)))
+
+
+
+ggplot(matched_tutor_data, aes(num_grade, col=tutoring, group=tutoring)) +
+  geom_density() +
+  theme_slcc() +
+  scale_colour_slcc() +
+  xlab("grade")
+  
+ggsave("density.png")
+
+
+
+```
+
+![Distribution of course grades by treatment, after matching, fall 2015 - spring 2017. Students who got tutoring (the yellow line) had fewer E and D grades compared to those who did not get tutoring (the blue line) and more grades at the C, B and A levels. ](density.png)
+
+```{r}
+names(matched_tutor_data)
+library(lme4)
+summary(mlm <- lmer(num_grade ~  (1 | person_uid) + (tutoring | class) + gender + age_beginning_of_term + former_cce + cum_earned_credits + cohort + white + cum_gpa + credits_att + pell_elig + declared_transfer, data= matched_tutor_data))
+
+temp_df <- data.frame(class = rownames(ranef(mlm)$class), diff = ranef(mlm)$class[,2], se_diff = 1.96*se.ranef(mlm)$class[,2])
+matched_tutor_data <- left_join(matched_tutor_data, temp_df, by = "class")
+
+se_df <- matched_tutor_data %>%
+   group_by(class, tutoring) %>%
+  summarize(count = n()) %>%
+  filter(count > 50, tutoring== "No") %>%
+  mutate(group = 1) %>%
+  dplyr::select(class, group) %>%
+  left_join(matched_tutor_data, by = "class") %>%
+  filter(group==1) %>%
+  group_by(class) %>%
+  slice(1) %>%
+  dplyr::select(class, `grade difference`=diff, se_diff)
+
+se_df$class <- factor(se_df$class, levels = se_df$class[order(se_df$`grade difference`)]) 
+
+ungroup(se_df) %>%
+  ggplot(aes(class, `grade difference`)) +
+  geom_bar(stat="identity", fill="#00ABE1") +
+  ylim(c(-.5, .7)) +
+  geom_errorbar(data= se_df, ymin = se_df$`grade difference` - se_df$se_diff, ymax =  se_df$`grade difference` + se_df$se_diff)+
+  theme_slcc() +
+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggsave("diffs.png")
+
+```
+
+
+![Difference in course grades by treatment and class, after matching, fall 2015 - spring 2017.  The error bars represent 95% confidence intervals on the point estimate of the grade difference. The confidence intervals are quite wide.  While we can have a lot of confidence in the overall grade difference, we don't have a lot of confidence in grade differences by class.  In large part this is because of low n.  The classes with error bars that do not include 0 are ones in which tutoring had a statistically significant effect on grade outcomes (these tend to be classes with larger n), and overlapping error bars between classes---all of them---mean that we cannot say with confidence that tutoring impacted grades differently across classes.](diffs.png)
+
+```{r, include = F}
+
+#need to do a cluster bootstrap to ensure same numbers within courses
+
+# boot <- matched_tutor_data[matched_tutor_data$class %in% as.character(se_df$class),]
+# boot_frame <- data.frame(class = as.character(se_df$class))
+# classes <- unique(boot_frame$class)
+# 
+# for(i in 1:1000){
+#   temp <- boot %>%
+#     group_by(class) %>%
+#     sample_frac(size=1, replace=T )
+#  
+#    boot_frame[, i+1] <- temp %>%
+#     group_by(class, tutoring) %>%
+#     summarize(grade = mean(num_grade)) %>%
+#     group_by(class) %>%
+#     summarize(diff = last(grade) - first(grade)) %>%
+#     dplyr::select(diff)
+#   
+# }
+# 
+# results <- data.frame(class = boot_frame$class, 
+#                       grade = apply(boot_frame[,-1], 1, mean), 
+#                       low = apply(boot_frame[,-1], 1, quantile, probs =.025),
+#                        high = apply(boot_frame[,-1], 1, quantile, probs=.975))
+# 
+# 
+# results$class <- factor(results$class, levels = results$class[order(results$grade)]) 
+# 
+# results %>%
+#   ggplot(aes(class, grade)) +
+#   geom_bar(stat="identity", fill="#00ABE1") +
+#   geom_errorbar(data= results, ymin = results$low, ymax =  results$high)+
+#   theme_slcc() +
+#   ylim(c(-.5, 1.5))+
+#  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+            
+
+
+```
+
+
+
+
+# Discussion
+
+There is strong evidence that tutoring helps students get higher grades in the courses for which they sought tutoring help.  This conclusion is not simply correlational.  Use of PSM allows us to be more assertive in our conclusions:  tutoring appears to *cause* higher grades.  This is perhaps not surprising inasmuch as SLCC tutors have been trained to offer instruction in the specific curriculum of the courses for which students are seeking help.  Still, these results are a nice confirmation of the efforts of SLCC tutors.
+
+One limitation of the study is that causal inference about treatment effects using PSM is restricted to local effects.  That is, we can can confidently say that tutoring impacts course grades, but only for the types of students in the specific courses in the matched samples.  Table 6 presents the ranges of the continuous student demographic variables in the matched samples.  The ranges suggest that the results are widely applicable:  they capture the vast majority of students and are comparable between the two groups.  An additional limitation is that the matches involving first year students are likely inexact because new students have no cumulative GPA and cumulative GPA is a crucial control on differences in unobservable characteristics like motivation and preparation.  There is the possibility of selection bias for these students.  Could this selection bias be driving our results? No.  When we eliminated the first semester students for the comparison, the grade effect of tutoring went down only slightly.
+
+Future studies could consider retention also as an outcome, which would require using more than two years of data.   Future studies might also put a threshold on what counts as a legitimate tutoring session.  For the present study, no thresholds were used; all visits no matter how short were included in the analysis.  Using such a threshold would likely do a better job of capturing meaningful interactions with tutors.
+
+```{r}
+
+demographic <- with(matched_tutor_data, data.frame(c("age", "earned credits", "credits attempted", "cum GPA"), 
+                                    minimum=c(min(age_beginning_of_term), min(cum_earned_credits), min(credits_att), min(cum_gpa)),
+                                    maximum=c(max(age_beginning_of_term), max(cum_earned_credits), max(credits_att), max(cum_gpa))))
+   
+names(demographic)[1]  <- c("characteristic")
+ 
+print(xtable(demographic, caption = "Minimum and maximum of continuous student demographic variables in matched samples"), include.rownames=FALSE)
+
+df <- matched_tutor_data %>%
+  group_by(tutoring) %>%
+  summarize(`minimum age` = min(age_beginning_of_term),
+            `maximum age` = max(age_beginning_of_term),
+            `minimum earned credits` = min(cum_earned_credits),
+            `maximum earned credits` = max(cum_earned_credits),
+            `minimum attempted credits` = min(credits_att),
+            `maximum attempted credits` = max(credits_att),
+            `minimum cumulative GPA` = min(cum_gpa),
+            `maximum cumulative GPA` = max(cum_gpa))
+df <- t(df)
+print(xtable(df, caption = "Minimum and maximum of continuous student demographic variables in matched samples"), include.rownames=T)
+
+subset(matched_tutor_data, credits_att == 0)
+```
+
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{rll}
+  \hline
+tutoring & No & Yes \\ 
+  minimum age & 14 & 15 \\ 
+  maximum age & 78 & 73 \\ 
+  minimum earned credits & 0 & 0 \\ 
+  maximum earned credits & 247 & 197 \\ 
+  minimum attempted credits & 0 & 0 \\ 
+  maximum attempted credits & 30 & 22 \\ 
+  minimum cumulative GPA & 0 & 0 \\ 
+  maximum cumulative GPA & 4 & 4 \\ 
+   \hline
+\end{tabular}
+\caption{Minimum and maximum of continuous student demographic variables in matched samples.} 
+\end{table}
